@@ -30,8 +30,8 @@ import { Coin, Wallet, wallets } from "./db/schema";
 import { ethers } from "ethers";
 import type { Update } from "telegraf/types";
 
-interface MyContext <U extends Update = Update> extends Context<U> {
-	session: {
+interface MyContext<U extends Update = Update> extends Context<U> {
+    session: {
         awaitingTradeAddress?: number;
         awaitingWalletRename?: {
             messageId: number;
@@ -50,7 +50,7 @@ interface MyContext <U extends Update = Update> extends Context<U> {
             coinId: number;
         };
     };
-};
+}
 
 const bot = new Telegraf<MyContext>(TELEGRAM_BOT_TOKEN);
 bot.use(session());
@@ -66,177 +66,193 @@ bot.start(async (ctx) => {
 });
 
 bot.action("back_to_menu", async (ctx) => {
-    await ctx.answerCbQuery();
-    const menu = getMainMenu(ctx.from.username);
-    return ctx.editMessageText(menu.text, menu.options);
+    try {
+        await ctx.answerCbQuery();
+        const menu = getMainMenu(ctx.from.username);
+        return ctx.editMessageText(menu.text, menu.options);
+    } catch (err) {
+        console.error("Error in back_to_menu action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while navigating to the main menu. Please try again later."
+        );
+    }
 });
 
 bot.action("trade_request", async (ctx) => {
-    await ctx.answerCbQuery();
-    const msg = await ctx.reply(
-        "Reply to this message with token address that you want to trade:",
-        {
-            reply_markup: { force_reply: true },
-        }
-    );
+    try {
+        await ctx.answerCbQuery();
+        const msg = await ctx.reply(
+            "Reply to this message with the token address that you want to trade:",
+            {
+                reply_markup: { force_reply: true },
+            }
+        );
 
-    ctx.session = {
-        ...ctx.session,
-        awaitingTradeAddress: msg.message_id,
-    };
+        ctx.session.awaitingTradeAddress = msg.message_id;
+    } catch (err) {
+        console.error("Error in trade_request action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while initiating the trade request. Please try again later."
+        );
+    }
 });
 
 bot.action("menu_wallet", async (ctx) => {
-    await ctx.answerCbQuery();
-    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-    if (!fetchUser) {
-        return ctx.reply("Failed to fetch user.");
-    }
+    try {
+        await ctx.answerCbQuery();
+        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+        if (!fetchUser) throw new Error("Failed to fetch user");
 
-    const listWallets = await getListWallets(fetchUser.id);
-    const walletButtons =
-        listWallets?.map((wallet) => [
-            {
-                text: `${wallet.isDefault ? "🟢" : "🔘"} 💳 ${textOverflow(wallet.address, 5)}`,
-                callback_data: `wallet_${wallet.id}`,
+        const listWallets = await getListWallets(fetchUser.id);
+        const walletButtons =
+            listWallets?.map((wallet) => [
+                {
+                    text: `${wallet.isDefault ? "🟢" : "🔘"} 💳 ${textOverflow(wallet.address, 5)}`,
+                    callback_data: `wallet_${wallet.id}`,
+                },
+            ]) || [];
+
+        return ctx.editMessageText("Wallet Management:", {
+            reply_markup: {
+                inline_keyboard: [
+                    ...walletButtons,
+                    [{ text: "➕ Create New Wallet", callback_data: "wallet_create" }],
+                    [{ text: "⬅ Back", callback_data: "back_to_menu" }],
+                ],
             },
-        ]) || [];
-
-    return ctx.editMessageText("Wallet Management:", {
-        reply_markup: {
-            inline_keyboard: [
-                ...walletButtons,
-                [{ text: "➕ Create New Wallet", callback_data: "wallet_create" }],
-                [{ text: "⬅ Back", callback_data: "back_to_menu" }],
-            ],
-        },
-    });
+        });
+    } catch (err) {
+        console.error("Error in menu_wallet action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while accessing wallet management. Please try again later."
+        );
+    }
 });
 
 bot.action("wallet_create", async (ctx) => {
-    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-    if (!fetchUser) {
-        return ctx.reply("Failed to fetch user.");
-    }
+    try {
+        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+        if (!fetchUser) throw new Error("Failed to fetch user");
 
-    const newWalletResp = await createWallet(fetchUser.id);
-    if (!newWalletResp) {
-        return ctx.reply("Failed to create wallet.");
-    }
-    const newWallet = newWalletResp.newWallet;
-    const privateKey = newWalletResp.privateKey;
-    if (!newWallet) {
-        return ctx.reply("Failed to create wallet.");
-    }
+        const newWalletResp = await createWallet(fetchUser.id);
+        if (!newWalletResp) throw new Error("Failed to create wallet");
 
-    return await ctx.editMessageText(
-        `Generated new wallet:
+        const newWallet = newWalletResp.newWallet;
+        const privateKey = newWalletResp.privateKey;
+        if (!newWallet) throw new Error("Failed to create wallet");
 
-Address: <code>${newWallet.address}</code>
-Private Key: <code>${privateKey}</code>
+        return await ctx.editMessageText(
+            `Generated new wallet:
 
-⚠️ Make sure to save this private key using pen and paper only. Do NOT copy-paste it anywhere. You could also import it to your wallet. After you finish saving/importing the wallet credentials, delete this message. The bot will not display this information again.`,
-        {
-            parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        {
-                            text: "💳 " + textOverflow(newWallet.address, 5),
-                            callback_data: "wallet_" + newWallet.id,
-                        },
-                        {
-                            text: "⬅ Back",
-                            callback_data: "menu_wallet",
-                        },
+            Address: <code>${newWallet.address}</code>
+            Private Key: <code>${privateKey}</code>
+
+            ⚠️ Make sure to save this private key using pen and paper only. Do NOT copy-paste it anywhere. You could also import it to your wallet. After you finish saving/importing the wallet credentials, delete this message. The bot will not display this information again.`,
+            {
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            {
+                                text: "💳 " + textOverflow(newWallet.address, 5),
+                                callback_data: "wallet_" + newWallet.id,
+                            },
+                            {
+                                text: "⬅ Back",
+                                callback_data: "menu_wallet",
+                            },
+                        ],
                     ],
-                ],
-            },
-        }
-    );
+                },
+            }
+        );
+    } catch (err) {
+        console.error("Error in wallet_create action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while creating the wallet. Please try again later."
+        );
+    }
 });
 
 bot.action("close", async (ctx) => {
-    await ctx.answerCbQuery();
-    return ctx.deleteMessage();
+    try {
+        await ctx.answerCbQuery();
+        return ctx.deleteMessage();
+    } catch (err) {
+        console.error("Error in close action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while closing the message. Please try again later."
+        );
+    }
 });
 
 bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
     const [_, type, buyCoinId, amount] = params;
-
-    await ctx.answerCbQuery();
-    if (amount == "custom") {
-        const msg = await ctx.reply("Reply to this message with amount you want to buy:", {
-            reply_markup: { force_reply: true },
-        });
-
-        ctx.session = {
-            ...ctx.session,
-            awaitingBuyCustom: {
-                messageId: msg.message_id,
-                coinId: Number(buyCoinId),
-            },
-        };
-
-        return;
-    }
-
-    const coin = await getCacchedCoinByID(Number(buyCoinId));
-    if (!coin || !coin.address) {
-        return ctx.reply("Failed to fetch coin id");
-    }
-
-    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-    if (!fetchUser) {
-        return ctx.reply("Failed to fetch user.");
-    }
-
-    const wallet = await getDefaultWallet(fetchUser.id);
-    if (!wallet) {
-        return ctx.reply("Failed to fetch default wallet.");
-    }
-
-    let chatId, messageId;
-    if (type == "buy") {
-        const pendingMsg = await ctx.reply(
-            `<a href="https://explorer.aptoslabs.com/account/${wallet.address}">[💳 ${textOverflow(
-                wallet.address,
-                5
-            )}]</a> ⏳ Sending transaction...`,
-            {
-                parse_mode: "HTML",
-                link_preview_options: {
-                    is_disabled: true,
-                },
-            }
-        );
-        chatId = pendingMsg.chat.id;
-        messageId = pendingMsg.message_id;
-    } else {
-        await ctx.editMessageText(
-            `<a href="https://explorer.aptoslabs.com/account/${wallet.address}">[💳 ${textOverflow(
-                wallet.address,
-                5
-            )}]</a> ⏳ Sending transaction...`,
-            {
-                parse_mode: "HTML",
-                link_preview_options: {
-                    is_disabled: true,
-                },
-            }
-        );
-        chatId = ctx.chat?.id;
-        messageId = ctx.msgId;
-    }
-
-    const hasRegistered = await isCoinRegistered(wallet.address, coin.address);
-    if (!hasRegistered) {
-        const registerTx = await registerCoin(coin.address);
-        await signAndBroadcastTransaction(wallet, registerTx);
-    }
-
     try {
+        await ctx.answerCbQuery();
+        if (amount == "custom") {
+            const msg = await ctx.reply("Reply to this message with the amount you want to buy:", {
+                reply_markup: { force_reply: true },
+            });
+
+            ctx.session = {
+                ...ctx.session,
+                awaitingBuyCustom: {
+                    messageId: msg.message_id,
+                    coinId: Number(buyCoinId),
+                },
+            };
+
+            return;
+        }
+
+        const coin = await getCacchedCoinByID(Number(buyCoinId));
+        if (!coin || !coin.address) throw new Error("Failed to fetch the coin ID");
+
+        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+        if (!fetchUser) throw new Error("Failed to fetch user");
+
+        const wallet = await getDefaultWallet(fetchUser.id);
+        if (!wallet) throw new Error("Failed to fetch default wallet");
+
+        let chatId, messageId;
+        if (type == "buy") {
+            const pendingMsg = await ctx.reply(
+                `<a href="https://explorer.aptoslabs.com/account/${
+                    wallet.address
+                }">[💳 ${textOverflow(wallet.address, 5)}]</a> ⏳ Sending transaction...`,
+                {
+                    parse_mode: "HTML",
+                    link_preview_options: {
+                        is_disabled: true,
+                    },
+                }
+            );
+            chatId = pendingMsg.chat.id;
+            messageId = pendingMsg.message_id;
+        } else {
+            await ctx.editMessageText(
+                `<a href="https://explorer.aptoslabs.com/account/${
+                    wallet.address
+                }">[💳 ${textOverflow(wallet.address, 5)}]</a> ⏳ Sending transaction...`,
+                {
+                    parse_mode: "HTML",
+                    link_preview_options: {
+                        is_disabled: true,
+                    },
+                }
+            );
+            chatId = ctx.chat?.id;
+            messageId = ctx.msgId;
+        }
+
+        const hasRegistered = await isCoinRegistered(wallet.address, coin.address);
+        if (!hasRegistered) {
+            const registerTx = await registerCoin(coin.address);
+            await signAndBroadcastTransaction(wallet, registerTx);
+        }
+
         const swapTx = await createSwap({
             from: wallet.address,
             fromToken: "0x1::aptos_coin::AptosCoin",
@@ -245,12 +261,8 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
             slippage: 0.005,
         });
         const tx = await signAndBroadcastTransaction(wallet, swapTx);
-
-        if (!tx) {
-            throw new Error("Failed to sign and broadcast transaction");
-        } else if (!tx.success) {
-            throw new Error(tx.event_root_hash);
-        }
+        if (!tx) throw new Error("Failed to sign and broadcast transaction");
+        if (!tx.success) throw new Error(tx.event_root_hash);
 
         let outAmountUnit = 0;
         for (let event of tx.events) {
@@ -293,15 +305,10 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
             }
         );
     } catch (error: any) {
-        return ctx.telegram.editMessageText(
-            chatId,
-            messageId,
-            undefined,
-            `<a href=\"https://explorer.aptoslabs.com/account/${
-                wallet.address
-            }\">[💳 ${textOverflow(wallet.address, 5)}]</a> ❌ Failed to swap. ${error.message}`,
+        console.error("Error in buy action:", error);
+        return ctx.reply(
+            `An error occurred during the buy process: ${error.message}. Please try again.`,
             {
-                parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
                         [
@@ -316,9 +323,6 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
                         ],
                     ],
                 },
-                link_preview_options: {
-                    is_disabled: true,
-                },
             }
         );
     }
@@ -327,71 +331,56 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
 bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
     const [_, type, sellCoinId, percentageAmount] = params;
-
-    // Validate percentage is between 1-100
-    if (Number(percentageAmount) < 1 || Number(percentageAmount) > 100) {
-        return ctx.reply("Invalid percentage. Please choose between 1-100%");
-    }
-
-    await ctx.answerCbQuery();
-
-    const coin = await getCacchedCoinByID(Number(sellCoinId));
-    if (!coin || !coin.address) {
-        return ctx.reply("Failed to fetch coin id");
-    }
-
-    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-    if (!fetchUser) {
-        return ctx.reply("Failed to fetch user.");
-    }
-
-    const wallet = await getDefaultWallet(fetchUser.id);
-    if (!wallet) {
-        return ctx.reply("Failed to fetch default wallet.");
-    }
-
-    // Get token balance
-    let chatId, messageId;
-    if (type == "sell") {
-        const pendingMsg = await ctx.reply(
-            `<a href="https://explorer.aptoslabs.com/account/${wallet.address}">[💳 ${textOverflow(
-                wallet.address,
-                5
-            )}]</a> ⏳ Sending transaction...`,
-            {
-                parse_mode: "HTML",
-                link_preview_options: {
-                    is_disabled: true,
-                },
-            }
-        );
-        chatId = pendingMsg.chat.id;
-        messageId = pendingMsg.message_id;
-    } else {
-        await ctx.editMessageText(
-            `<a href="https://explorer.aptoslabs.com/account/${wallet.address}">[💳 ${textOverflow(
-                wallet.address,
-                5
-            )}]</a> ⏳ Sending transaction...`,
-            {
-                parse_mode: "HTML",
-                link_preview_options: {
-                    is_disabled: true,
-                },
-            }
-        );
-        chatId = ctx.chat?.id;
-        messageId = ctx.msgId;
-    }
-
     try {
-        // Get token balance first
-        const balance = await getBalance(wallet.address, coin.address);
-        if (!balance || balance === "0") {
-            throw new Error(`No ${coin.symbol} balance to sell`);
+        await ctx.answerCbQuery();
+
+        if (Number(percentageAmount) < 1 || Number(percentageAmount) > 100) {
+            return ctx.reply("Invalid percentage. Please choose between 1-100%");
         }
 
-        // Calculate amount to sell based on percentage
+        const coin = await getCacchedCoinByID(Number(sellCoinId));
+        if (!coin || !coin.address) throw new Error("Failed to fetch the coin ID");
+
+        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+        if (!fetchUser) throw new Error("Failed to fetch user");
+
+        const wallet = await getDefaultWallet(fetchUser.id);
+        if (!wallet) throw new Error("Failed to fetch default wallet");
+
+        let chatId, messageId;
+        if (type == "sell") {
+            const pendingMsg = await ctx.reply(
+                `<a href="https://explorer.aptoslabs.com/account/${
+                    wallet.address
+                }">[💳 ${textOverflow(wallet.address, 5)}]</a> ⏳ Sending transaction...`,
+                {
+                    parse_mode: "HTML",
+                    link_preview_options: {
+                        is_disabled: true,
+                    },
+                }
+            );
+            chatId = pendingMsg.chat.id;
+            messageId = pendingMsg.message_id;
+        } else {
+            await ctx.editMessageText(
+                `<a href="https://explorer.aptoslabs.com/account/${
+                    wallet.address
+                }">[💳 ${textOverflow(wallet.address, 5)}]</a> ⏳ Sending transaction...`,
+                {
+                    parse_mode: "HTML",
+                    link_preview_options: {
+                        is_disabled: true,
+                    },
+                }
+            );
+            chatId = ctx.chat?.id;
+            messageId = ctx.msgId;
+        }
+
+        const balance = await getBalance(wallet.address, coin.address);
+        if (!balance || balance === "0") throw new Error(`No ${coin.symbol} balance to sell`);
+
         const amountToSell = (BigInt(balance) * BigInt(percentageAmount)) / BigInt(100);
 
         const swapTx = await createSwap({
@@ -403,12 +392,8 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
         });
 
         const tx = await signAndBroadcastTransaction(wallet, swapTx);
-
-        if (!tx) {
-            throw new Error("Failed to sign and broadcast transaction");
-        } else if (!tx.success) {
-            throw new Error(tx.event_root_hash);
-        }
+        if (!tx) throw new Error("Failed to sign and broadcast transaction");
+        if (!tx.success) throw new Error(tx.event_root_hash);
 
         let outAmountUnit = 0;
         for (let event of tx.events) {
@@ -417,7 +402,7 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
             }
         }
 
-        const outAmount = ethers.formatUnits(outAmountUnit, 8); // APT decimals is 8
+        const outAmount = ethers.formatUnits(outAmountUnit, 8);
         const soldAmount = ethers.formatUnits(amountToSell, coin.decimals);
 
         return ctx.telegram.editMessageText(
@@ -449,15 +434,10 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
             }
         );
     } catch (error: any) {
-        return ctx.telegram.editMessageText(
-            chatId,
-            messageId,
-            undefined,
-            `<a href=\"https://explorer.aptoslabs.com/account/${
-                wallet.address
-            }\">[💳 ${textOverflow(wallet.address, 5)}]</a> ❌ Failed to swap. ${error.message}`,
+        console.error("Error in sell action:", error);
+        return ctx.reply(
+            `An error occurred during the sell process: ${error.message}. Please try again.`,
             {
-                parse_mode: "HTML",
                 reply_markup: {
                     inline_keyboard: [
                         [
@@ -471,9 +451,6 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
                             },
                         ],
                     ],
-                },
-                link_preview_options: {
-                    is_disabled: true,
                 },
             }
         );
@@ -811,62 +788,71 @@ function getMainMenu(username?: string) {
 }
 
 async function getCoinInfoMessage(address: string | undefined, id: number | undefined) {
-    let cachedCoin: Coin | undefined;
+    try {
+        let cachedCoin: Coin | undefined;
 
-    if (!address && !id) {
-        throw new Error("Failed to fetch data");
-    } else if (!address && id) {
-        cachedCoin = await getCacchedCoinByID(id);
-        if (!cachedCoin || !cachedCoin.address) {
-            throw new Error("Failed to fetch coin id");
+        if (!address && !id) {
+            throw new Error("No address or ID specified");
         }
-    } else if (address) {
-        cachedCoin = await getOrCreateCachedCoin(address);
-    } else {
-        throw new Error("Failed to fetch data");
-    }
 
-    if (!cachedCoin) {
-        throw new Error("Failed to fetch data");
-    }
-
-    let [info, rate] = await Promise.all([
-        getCoinInfo(cachedCoin.address),
-        await getSwapRate({
-            fromToken: "0x1::aptos_coin::AptosCoin",
-            toToken: cachedCoin.address,
-            amount: convertValueToDecimal(1, 8).toNumber(),
-            from: "",
-            slippage: 0,
-        }),
-    ]);
-
-    if (!info) {
-        throw new Error("Failed to fetch coin info");
-    }
-    let website = "";
-    for (const i in info.social) {
-        if (info.social[i]) {
-            website += `<a href="${info.social[i]}">${i}</a> `;
+        if (!address && id) {
+            cachedCoin = await getCacchedCoinByID(id);
+            if (!cachedCoin || !cachedCoin.address) {
+                throw new Error("Failed to fetch coin using the provided ID");
+            }
+        } else if (address) {
+            cachedCoin = await getOrCreateCachedCoin(address);
+            if (!cachedCoin) {
+                throw new Error("Failed to fetch or create coin using the address");
+            }
+        } else {
+            throw new Error("Invalid address or ID");
         }
-    }
-    rate = rate ? rate / 10 ** cachedCoin.decimals : 0;
 
-    return {
-        text: `<code>${info.name} - ${info.symbol}</code>
-<a href="https://explorer.aptoslabs.com/coin/${address}">CA</a> - <code>${address}</code>
+        const [info, rate] = await Promise.all([
+            getCoinInfo(cachedCoin.address),
+            getSwapRate({
+                fromToken: "0x1::aptos_coin::AptosCoin",
+                toToken: cachedCoin.address,
+                amount: convertValueToDecimal(1, 8).toNumber(),
+                from: "",
+                slippage: 0,
+            }),
+        ]);
 
-🪙 Price: $${cryptoAmountRound(info.price)} • ${(info.change * 100).toFixed(2)}%
+        if (!info) {
+            throw new Error("Failed to fetch coin info");
+        }
+
+        let website = "";
+        for (const i in info.social) {
+            if (info.social[i]) {
+                website += `<a href="${info.social[i]}">${i}</a> `;
+            }
+        }
+        const formattedRate = rate ? rate / 10 ** cachedCoin.decimals : 0;
+
+        return {
+            text: `<code>${info.name} - ${info.symbol}</code>
+<a href="https://explorer.aptoslabs.com/coin/${address ?? cachedCoin.address}">CA</a> - <code>${
+                address ?? cachedCoin.address
+            }</code>
+
+🪙 Price: $${cryptoAmountRound(info.price || 0)} • ${(info.change || 0 * 100).toFixed(2)}%
 📊 Volume: ${info.volume ? marketCapRound(info.volume, "$") : "-"}
 💧 Liquidity: ${info.liquidity ? marketCapRound(info.liquidity, "$") : "-"}
 💰 MarketCap: ${info.mcap ? marketCapRound(info.mcap, "$") : "-"}
 
 🌐 Website: ${website}
 
-🔀 Rate: 1 APT ~ ${rate} ${info.symbol}
+🔀 Rate: 1 APT ~ ${formattedRate} ${info.symbol}
 `,
-        cachedCoin,
-    };
+            cachedCoin,
+        };
+    } catch (error: any) {
+        console.error("Error in getCoinInfoMessage:", error);
+        throw new Error(`Failed to retrieve coin information: ${error.message}`);
+    }
 }
 
 function getTradeInlineKeyboard(coin: Coin) {

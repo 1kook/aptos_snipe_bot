@@ -93,19 +93,32 @@ export const getCoinInfo = async (address: string) => {
         const candleResult = candleResults[candleResults.length - 1];
 
         return {
-            volume: candleResult.volume,
-            price: candleResult.close,
-            change: (candleResult.close - candleResult.open) / candleResult.open,
-            mcap: pairResult.token.metrics.mcap,
-            circulatingSupply: pairResult.token.metrics.circulatingSupply,
-            totalSupply: pairResult.token.metrics.totalSupply,
-            social: pairResult.token.links,
-            name: pairResult.token.name,
-            symbol: pairResult.token.symbol,
-            liquidity: pairResult.metrics.liquidity,
+            volume: candleResult.volume as number,
+            price: candleResult.close as number,
+            change: candleResult.open
+                ? (candleResult.close - candleResult.open) / candleResult.open
+                : null,
+            mcap: pairResult.token.metrics.mcap as number,
+            circulatingSupply: pairResult.token.metrics.circulatingSupply as number,
+            totalSupply: pairResult.token.metrics.totalSupply as number,
+            social: pairResult.token.links as any,
+            name: pairResult.token.name as string,
+            symbol: pairResult.token.symbol as string,
+            liquidity: pairResult.metrics.liquidity as number,
         };
     } catch (error) {
-        console.error("Error during coin info:", error);
+        return {
+            volume: null,
+            price: null,
+            change: null,
+            mcap: null,
+            circulatingSupply: null,
+            totalSupply: null,
+            social: null,
+            name: null,
+            symbol: null,
+            liquidity: null,
+        };
     }
 };
 
