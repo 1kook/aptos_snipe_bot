@@ -88,7 +88,10 @@ bot.action("trade_request", async (ctx) => {
             }
         );
 
-        ctx.session.awaitingTradeAddress = msg.message_id;
+        ctx.session = {
+            ...ctx.session,
+            awaitingTradeAddress: msg.message_id
+        }
     } catch (err) {
         console.error("Error in trade_request action:", err);
         return ctx.reply(
