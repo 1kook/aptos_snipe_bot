@@ -34,7 +34,7 @@ export function cryptoAmountRound(amount: string | number): string {
             significantCount++;
         }
 
-        if (significantCount === 4) break;
+        if (significantCount === 5) break;
     }
 
     // Format the decimal part

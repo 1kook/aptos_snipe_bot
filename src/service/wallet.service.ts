@@ -54,10 +54,10 @@ export const getListWallets = async (userId: number) => {
     }
 };
 
-export const getWalletById = async (walletId: number) => {
+export const getWalletById = async (walletId: number, userId: number) => {
     try {
         const fetchWallet = await db.query.wallets.findFirst({
-            where: eq(wallets.id, walletId),
+            where: and(eq(wallets.id, walletId), eq(wallets.userId, userId)),
         });
         return fetchWallet;
     } catch (error) {
@@ -110,12 +110,16 @@ current_fungible_asset_balances(
 
         for (let i = 0; i < coins.length; i++) {
             for (let j = 0; j < rawPositions.length; j++) {
-                if (coins[i]["asset_type"] === rawPositions[j]["asset_type"]) {
+                if (
+                    coins[i]["asset_type"] === rawPositions[j]["asset_type"] &&
+                    rawPositions[j]["amount"] != "0"
+                ) {
                     positions.push({
                         name: coins[i]["name"],
                         symbol: coins[i]["symbol"],
                         assetType: coins[i]["asset_type"],
-                        amount: ethers.formatUnits(rawPositions[j]["amount"], coins[i]["decimals"]),
+                        decimals: coins[i]["decimals"],
+                        amount: rawPositions[j]["amount"],
                     });
                 }
             }
@@ -173,7 +177,7 @@ export const deleteWalletById = async (walletId: number, userId: number) => {
 
 export const setDefaultWallet = async (walletId: number, userId: number) => {
     try {
-        const wallet = await getWalletById(walletId);
+        const wallet = await getWalletById(walletId, userId);
         if (!wallet) {
             return;
         }

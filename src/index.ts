@@ -26,13 +26,17 @@ import {
 import { convertValueToDecimal } from "@pontem/liquidswap-sdk";
 import { cryptoAmountRound, marketCapRound } from "./util/format";
 import { textOverflow } from "./util/textOverflow";
-import { Coin, Wallet, wallets } from "./db/schema";
+import { Coin, User, Wallet, wallets } from "./db/schema";
 import { ethers } from "ethers";
 import type { Update } from "telegraf/types";
+import { NATIVE_COIN, NATIVE_DECIMAL } from "./constant";
 
 interface MyContext<U extends Update = Update> extends Context<U> {
     session: {
-        awaitingTradeAddress?: number;
+        awaitingTradeAddress?: {
+            messageId: number;
+            walletId: number;
+        };
         awaitingWalletRename?: {
             messageId: number;
             walletId: number;
@@ -43,6 +47,7 @@ interface MyContext<U extends Update = Update> extends Context<U> {
         };
         awaitingBuyCustom?: {
             messageId: number;
+            walletId: number;
             coinId: number;
         };
         awaitingSellCustom?: {
@@ -78,7 +83,20 @@ bot.action("back_to_menu", async (ctx) => {
     }
 });
 
-bot.action("trade_request", async (ctx) => {
+bot.action(/^trade_(\d+|main)$/, async (ctx) => {
+    const params = ctx.match;
+    let [_, walletId] = params;
+    if (walletId == "main") {
+        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+        if (!fetchUser) {
+            return ctx.reply("Failed to fetch user.");
+        }
+        const defaultWallet = await getDefaultWallet(fetchUser.id);
+        if (!defaultWallet) {
+            return ctx.reply("No default wallet found.");
+        }
+        walletId = defaultWallet.id.toString();
+    }
     try {
         await ctx.answerCbQuery();
         const msg = await ctx.reply(
@@ -90,27 +108,83 @@ bot.action("trade_request", async (ctx) => {
 
         ctx.session = {
             ...ctx.session,
-            awaitingTradeAddress: msg.message_id
-        }
+            awaitingTradeAddress: {
+                messageId: msg.message_id,
+                walletId: Number(walletId),
+            },
+        };
     } catch (err) {
-        console.error("Error in trade_request action:", err);
+        console.error("Error in trade action:", err);
         return ctx.reply(
             "An unexpected error occurred while initiating the trade request. Please try again later."
         );
     }
 });
 
-bot.action("menu_wallet", async (ctx) => {
+bot.action(/^tradewithcoin_(\d+)_(\d+)$/, async (ctx) => {
+    const params = ctx.match;
+    let [_, walletId, coinId] = params;
+    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+    if (!fetchUser) {
+        return ctx.reply("Failed to fetch user.");
+    }
+
+    if (walletId == "main") {
+        const defaultWallet = await getDefaultWallet(fetchUser.id);
+        if (!defaultWallet) {
+            return ctx.reply("No default wallet found.");
+        }
+        walletId = defaultWallet.id.toString();
+    }
+    try {
+        await ctx.answerCbQuery();
+        const wallet = await getWalletById(Number(walletId), fetchUser.id);
+        if (!wallet) {
+            return ctx.reply("Trade: Failed to fetch wallet.");
+        }
+        const { text, cachedCoin } = await getCoinInfoMessage(undefined, Number(coinId), wallet);
+
+        return ctx.editMessageText(text, {
+            parse_mode: "HTML",
+            reply_markup: getTradeInlineKeyboard(cachedCoin, wallet),
+            link_preview_options: {
+                is_disabled: true,
+            },
+        });
+    } catch (err) {
+        console.error("Error in trade action:", err);
+        return ctx.reply(
+            "An unexpected error occurred while initiating the trade request. Please try again later."
+        );
+    }
+});
+
+bot.action("wallet_menu", async (ctx) => {
     try {
         await ctx.answerCbQuery();
         const fetchUser = await getOrCreateUser(ctx.from.id.toString());
         if (!fetchUser) throw new Error("Failed to fetch user");
 
         const listWallets = await getListWallets(fetchUser.id);
+        const listWalletsWithBalance = await Promise.all(
+            listWallets?.map(async (wallet) => {
+                const balance = await getBalance(wallet.address, NATIVE_COIN);
+                return {
+                    ...wallet,
+                    balance: balance || "0",
+                };
+            }) || []
+        );
+
         const walletButtons =
-            listWallets?.map((wallet) => [
+            listWalletsWithBalance?.map((wallet) => [
                 {
-                    text: `${wallet.isDefault ? "🟢" : "🔘"} 💳 ${textOverflow(wallet.address, 5)}`,
+                    text: `${wallet.isDefault ? "🟢" : "🔘"} 💳 ${textOverflow(
+                        wallet.address,
+                        5
+                    )} | ${cryptoAmountRound(
+                        ethers.formatUnits(wallet.balance, NATIVE_DECIMAL)
+                    )} APT`,
                     callback_data: `wallet_${wallet.id}`,
                 },
             ]) || [];
@@ -162,7 +236,7 @@ bot.action("wallet_create", async (ctx) => {
                             },
                             {
                                 text: "⬅ Back",
-                                callback_data: "menu_wallet",
+                                callback_data: "wallet_menu",
                             },
                         ],
                     ],
@@ -189,9 +263,9 @@ bot.action("close", async (ctx) => {
     }
 });
 
-bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
+bot.action(/^(buy|custombuy)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
-    const [_, type, buyCoinId, amount] = params;
+    const [_, type, walletId, buyCoinId, amount] = params;
     try {
         await ctx.answerCbQuery();
         if (amount == "custom") {
@@ -203,6 +277,7 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
                 ...ctx.session,
                 awaitingBuyCustom: {
                     messageId: msg.message_id,
+                    walletId: Number(walletId),
                     coinId: Number(buyCoinId),
                 },
             };
@@ -216,8 +291,8 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
         const fetchUser = await getOrCreateUser(ctx.from.id.toString());
         if (!fetchUser) throw new Error("Failed to fetch user");
 
-        const wallet = await getDefaultWallet(fetchUser.id);
-        if (!wallet) throw new Error("Failed to fetch default wallet");
+        const wallet = await getWalletById(Number(walletId), fetchUser.id);
+        if (!wallet) throw new Error("Failed to fetch wallet");
 
         let chatId, messageId;
         if (type == "buy") {
@@ -258,9 +333,9 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
 
         const swapTx = await createSwap({
             from: wallet.address,
-            fromToken: "0x1::aptos_coin::AptosCoin",
+            fromToken: NATIVE_COIN,
             toToken: coin.address,
-            amount: convertValueToDecimal(amount, 8).toNumber(),
+            amount: convertValueToDecimal(amount, NATIVE_DECIMAL).toNumber(),
             slippage: 0.005,
         });
         const tx = await signAndBroadcastTransaction(wallet, swapTx);
@@ -317,7 +392,7 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
                         [
                             {
                                 text: "Retry",
-                                callback_data: `buy_${buyCoinId}_${amount}`,
+                                callback_data: `buy_${walletId}_${buyCoinId}_${amount}`,
                             },
                             {
                                 text: "Close",
@@ -331,9 +406,9 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     }
 });
 
-bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
+bot.action(/^(sell|customsell)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
-    const [_, type, sellCoinId, percentageAmount] = params;
+    const [_, type, walletId, sellCoinId, percentageAmount] = params;
     try {
         await ctx.answerCbQuery();
 
@@ -347,8 +422,8 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
         const fetchUser = await getOrCreateUser(ctx.from.id.toString());
         if (!fetchUser) throw new Error("Failed to fetch user");
 
-        const wallet = await getDefaultWallet(fetchUser.id);
-        if (!wallet) throw new Error("Failed to fetch default wallet");
+        const wallet = await getWalletById(Number(walletId), fetchUser.id);
+        if (!wallet) throw new Error("Failed to fetch wallet");
 
         let chatId, messageId;
         if (type == "sell") {
@@ -389,7 +464,7 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
         const swapTx = await createSwap({
             from: wallet.address,
             fromToken: coin.address,
-            toToken: "0x1::aptos_coin::AptosCoin",
+            toToken: NATIVE_COIN,
             amount: Number(amountToSell.toString()),
             slippage: 0.005,
         });
@@ -405,7 +480,7 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
             }
         }
 
-        const outAmount = ethers.formatUnits(outAmountUnit, 8);
+        const outAmount = ethers.formatUnits(outAmountUnit, NATIVE_DECIMAL);
         const soldAmount = ethers.formatUnits(amountToSell, coin.decimals);
 
         return ctx.telegram.editMessageText(
@@ -446,7 +521,7 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
                         [
                             {
                                 text: "Retry",
-                                callback_data: `sell_${sellCoinId}_${percentageAmount}`,
+                                callback_data: `sell_${walletId}_${sellCoinId}_${percentageAmount}`,
                             },
                             {
                                 text: "Close",
@@ -460,35 +535,20 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     }
 });
 
-bot.action(/^refresh_(.+)$/, async (ctx) => {
-    try {
-        const cachedCoinId = Number(ctx.match[1]);
-
-        const { text, cachedCoin } = await getCoinInfoMessage(undefined, cachedCoinId);
-        await ctx.editMessageText(text, {
-            parse_mode: "HTML",
-            reply_markup: getTradeInlineKeyboard(cachedCoin),
-        });
-        await ctx.answerCbQuery();
-    } catch (error) {
-        console.log(error);
-        await ctx.answerCbQuery();
-    }
-});
-
-bot.action(/^wallet_(\d+)|main$/, async (ctx) => {
+bot.action(/^wallet_(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const walletId = ctx.match[1];
 
+    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+    if (!fetchUser) {
+        return ctx.reply("Failed to fetch user.");
+    }
+
     let currentWallet: Wallet | undefined;
     if (ctx.match[0] == "main") {
-        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-        if (!fetchUser) {
-            return ctx.reply("Failed to fetch user.");
-        }
         currentWallet = await getDefaultWallet(fetchUser.id);
     } else {
-        currentWallet = await getWalletById(Number(walletId));
+        currentWallet = await getWalletById(Number(walletId), fetchUser.id);
     }
 
     if (!currentWallet) {
@@ -496,21 +556,7 @@ bot.action(/^wallet_(\d+)|main$/, async (ctx) => {
     }
 
     try {
-        const positions = await getListPositions(currentWallet.address);
-        let positionStr = "No tokens found";
-        if (positions && positions.length > 0) {
-            positionStr = "";
-            for (const pos of positions) {
-                positionStr += ` └ ${pos.name}: ${pos.amount} ${pos.symbol}\n`;
-            }
-        }
-
-        // Get wallet name - you'll need to add name field to your wallet schema/service
-        const fetchUser = await getOrCreateUser(ctx.from.id.toString());
-        if (!fetchUser) {
-            return ctx.reply("Failed to fetch user.");
-        }
-
+        const balance = await getBalance(currentWallet.address, NATIVE_COIN);
         const isDefault = currentWallet?.isDefault; // You'll need to add this field
 
         const message = `
@@ -522,14 +568,23 @@ ${isDefault ? "✅ Default Wallet" : ""}
 📍 Address: 
 <code>${currentWallet.address}</code>
 
-💰 Positions:
-${positionStr}
+💰 Balance: ${cryptoAmountRound(ethers.formatUnits(balance, NATIVE_DECIMAL))} APT
 `;
 
-        return ctx.reply(message, {
+        return ctx.editMessageText(message, {
             parse_mode: "HTML",
             reply_markup: {
                 inline_keyboard: [
+                    [
+                        {
+                            text: "🚀 Trade",
+                            callback_data: `trade_${currentWallet.id}`,
+                        },
+                        {
+                            text: "📍 Positions",
+                            callback_data: `positions_${currentWallet.id}`,
+                        },
+                    ],
                     [
                         { text: "✏️ Rename", callback_data: `wallet_rename_${currentWallet.id}` },
                         {
@@ -539,12 +594,17 @@ ${positionStr}
                     ],
                     [
                         {
-                            text: "💸 Withdraw APT",
+                            text: "💸 Withdraw",
                             callback_data: `wallet_withdraw_${currentWallet.id}`,
                         },
                         { text: "🗑️ Delete", callback_data: `wallet_delete_${currentWallet.id}` },
                     ],
-                    [{ text: "Close", callback_data: "close" }],
+                    [
+                        {
+                            text: "⬅ Back",
+                            callback_data: "wallet_menu",
+                        },
+                    ],
                 ],
             },
         });
@@ -667,17 +727,99 @@ bot.action(/^wallet_delete_confirm_(\d+)$/, async (ctx) => {
     }
 });
 
+bot.action(/^positions_(\d+)$/, async (ctx) => {
+    const walletId = Number(ctx.match[1]);
+
+    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+    if (!fetchUser) {
+        return ctx.reply("Failed to fetch user.");
+    }
+
+    const currentWallet = await getWalletById(walletId, fetchUser.id);
+    if (!currentWallet) {
+        return ctx.reply("Failed to fetch wallet.");
+    }
+
+    const inlineKeyboard = [];
+
+    const positions = await getListPositions(currentWallet.address);
+    if (positions && positions.length > 0) {
+        const results = await Promise.all(
+            positions.map(async (pos) => {
+                // if (pos.assetType === NATIVE_COIN) {
+                //     return null;
+                // }
+                const cachedCoin = await getOrCreateCachedCoin(pos.assetType);
+                return {
+                    cachedCoin,
+                    pos,
+                };
+            })
+        );
+
+        results.forEach((result) => {
+            if (result && result.cachedCoin) {
+                const { pos, cachedCoin } = result;
+                inlineKeyboard.push([
+                    {
+                        text: `${pos.name}: ${cryptoAmountRound(
+                            ethers.formatUnits(pos.amount, pos.decimals)
+                        )} ${pos.symbol}`,
+                        callback_data: `tradewithcoin_${walletId}_${cachedCoin.id}`,
+                    },
+                ]);
+            }
+        });
+    }
+
+    inlineKeyboard.push([
+        {
+            text: "⬅ Back",
+            callback_data: `wallet_${walletId}`,
+        },
+    ]);
+
+    return ctx.editMessageText(
+        `📍 Positions
+
+Address: <code>${currentWallet.address}</code>
+`,
+        {
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: inlineKeyboard,
+            },
+        }
+    );
+});
+
 bot.on(message("text"), async (ctx) => {
+    const fetchUser = await getOrCreateUser(ctx.from.id.toString());
+    if (!fetchUser) {
+        return ctx.reply("Failed to fetch user.");
+    }
+
     if (ctx.message.reply_to_message) {
         const replyToId = ctx.message.reply_to_message.message_id;
 
-        if (ctx.session?.awaitingTradeAddress === replyToId) {
+        if (ctx.session?.awaitingTradeAddress?.messageId === replyToId) {
             const address = ctx.message.text;
+            let wallet = await getWalletById(
+                ctx.session.awaitingTradeAddress.walletId,
+                fetchUser.id
+            );
+            if (!wallet) {
+                return ctx.reply("Buy: Failed to fetch wallet.");
+            }
+
             try {
-                const { text, cachedCoin } = await getCoinInfoMessage(address, undefined);
+                const { text, cachedCoin } = await getCoinInfoMessage(address, undefined, wallet);
                 return ctx.replyWithHTML(text, {
                     parse_mode: "HTML",
-                    reply_markup: getTradeInlineKeyboard(cachedCoin),
+                    reply_markup: getTradeInlineKeyboard(cachedCoin, wallet),
+                    link_preview_options: {
+                        is_disabled: true,
+                    },
                 });
             } catch (error) {
                 return ctx.reply("Buy: Failed to fetch coin info.");
@@ -691,13 +833,13 @@ bot.on(message("text"), async (ctx) => {
             try {
                 await renameWallet(walletId, newName);
                 // call action
-                return await ctx.reply("✅ Wallet renamed successfully!", {
+                return await ctx.editMessageText("✅ Wallet renamed successfully!", {
                     reply_markup: {
                         inline_keyboard: [
                             [
                                 {
                                     text: "⬅ Back",
-                                    callback_data: "menu_wallet",
+                                    callback_data: "wallet_menu",
                                 },
                             ],
                         ],
@@ -723,7 +865,7 @@ bot.on(message("text"), async (ctx) => {
                             [
                                 {
                                     text: "⬅ Back",
-                                    callback_data: "menu_wallet",
+                                    callback_data: "wallet_menu",
                                 },
                             ],
                         ],
@@ -735,7 +877,7 @@ bot.on(message("text"), async (ctx) => {
                 ctx.session.awaitingWithdrawal = undefined;
             }
         } else if (ctx.session?.awaitingBuyCustom?.messageId === replyToId) {
-            const { coinId } = ctx.session.awaitingBuyCustom;
+            const { walletId, coinId } = ctx.session.awaitingBuyCustom;
             const amount = ctx.message.text;
             try {
                 return await ctx.reply(`Confirm buy with ${amount} APT`, {
@@ -744,7 +886,7 @@ bot.on(message("text"), async (ctx) => {
                             [
                                 {
                                     text: "✅ Confirm",
-                                    callback_data: `custombuy_${coinId}_${amount}`,
+                                    callback_data: `custombuy_${walletId}_${coinId}_${amount}`,
                                 },
                                 {
                                     text: "❌ Cancel",
@@ -762,11 +904,19 @@ bot.on(message("text"), async (ctx) => {
         }
     } else {
         const address = ctx.message.text;
+        let wallet = await getDefaultWallet(fetchUser.id);
+        if (!wallet) {
+            return ctx.reply("Buy: Failed to fetch wallet.");
+        }
+
         try {
-            const { text, cachedCoin } = await getCoinInfoMessage(address, undefined);
+            const { text, cachedCoin } = await getCoinInfoMessage(address, undefined, wallet);
             return ctx.replyWithHTML(text, {
                 parse_mode: "HTML",
-                reply_markup: getTradeInlineKeyboard(cachedCoin),
+                reply_markup: getTradeInlineKeyboard(cachedCoin, wallet),
+                link_preview_options: {
+                    is_disabled: true,
+                },
             });
         } catch (error) {
             return ctx.reply("Failed to fetch token info. Please check the address and try again.");
@@ -775,65 +925,61 @@ bot.on(message("text"), async (ctx) => {
 });
 
 function getMainMenu(username?: string) {
-    const welcomeText = `Welcome, ${username}!`;
+    const welcomeText = `Welcome!`;
 
     return {
         text: welcomeText,
         options: {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: "💰 Trade", callback_data: "trade_request" }],
-                    [{ text: "💳 Wallet", callback_data: "menu_wallet" }],
+                    [{ text: "🚀 Trade now", callback_data: "trade_main" }],
+                    [{ text: "💳 Wallet", callback_data: "wallet_menu" }],
                 ],
             },
         },
     };
 }
 
-async function getCoinInfoMessage(address: string | undefined, id: number | undefined) {
+async function getCoinInfoMessage(
+    address: string | undefined,
+    id: number | undefined,
+    wallet: Wallet
+) {
     try {
-        let cachedCoin: Coin | undefined;
-
         if (!address && !id) {
             throw new Error("No address or ID specified");
         }
 
-        if (!address && id) {
-            cachedCoin = await getCacchedCoinByID(id);
-            if (!cachedCoin || !cachedCoin.address) {
-                throw new Error("Failed to fetch coin using the provided ID");
-            }
-        } else if (address) {
-            cachedCoin = await getOrCreateCachedCoin(address);
-            if (!cachedCoin) {
-                throw new Error("Failed to fetch or create coin using the address");
-            }
-        } else {
-            throw new Error("Invalid address or ID");
+        const cachedCoin = address
+            ? await getOrCreateCachedCoin(address)
+            : await getCacchedCoinByID(id!);
+
+        if (!cachedCoin?.address) {
+            throw new Error(`Failed to fetch coin ${address ? "using address" : "using ID"}`);
         }
 
-        const [info, rate] = await Promise.all([
+        const [info, rate, nativeBalance, tokenBalance] = await Promise.all([
             getCoinInfo(cachedCoin.address),
             getSwapRate({
-                fromToken: "0x1::aptos_coin::AptosCoin",
+                fromToken: NATIVE_COIN,
                 toToken: cachedCoin.address,
-                amount: convertValueToDecimal(1, 8).toNumber(),
+                amount: convertValueToDecimal(1, NATIVE_DECIMAL).toNumber(),
                 from: "",
                 slippage: 0,
             }),
+            getBalance(wallet.address, NATIVE_COIN),
+            getBalance(wallet.address, cachedCoin.address),
         ]);
-
         if (!info) {
             throw new Error("Failed to fetch coin info");
         }
 
-        let website = "";
-        for (const i in info.social) {
-            if (info.social[i]) {
-                website += `<a href="${info.social[i]}">${i}</a> `;
-            }
-        }
-        const formattedRate = rate ? rate / 10 ** cachedCoin.decimals : 0;
+        const website = Object.entries(info.social)
+            .filter(([_, url]) => url)
+            .map(([platform, url]) => `<a href="${url}">${platform}</a>`)
+            .join(" ");
+
+        const formattedRate = ethers.formatUnits(rate || 0, cachedCoin.decimals);
 
         return {
             text: `<code>${info.name} - ${info.symbol}</code>
@@ -849,6 +995,13 @@ async function getCoinInfoMessage(address: string | undefined, id: number | unde
 🌐 Website: ${website}
 
 🔀 Rate: 1 APT ~ ${formattedRate} ${info.symbol}
+🏦 Balance:
+ └APT: ${cryptoAmountRound(ethers.formatUnits(nativeBalance || 0, NATIVE_DECIMAL))}
+ └${cachedCoin.symbol}: ${cryptoAmountRound(
+                ethers.formatUnits(tokenBalance || 0, cachedCoin.decimals)
+            )}
+
+🕓 Last updated: ${new Date().toUTCString()}
 `,
             cachedCoin,
         };
@@ -858,7 +1011,7 @@ async function getCoinInfoMessage(address: string | undefined, id: number | unde
     }
 }
 
-function getTradeInlineKeyboard(coin: Coin) {
+function getTradeInlineKeyboard(coin: Coin, wallet: Wallet) {
     return {
         inline_keyboard: [
             [
@@ -866,30 +1019,40 @@ function getTradeInlineKeyboard(coin: Coin) {
                     text: "🔍 Explorer",
                     url: `https://explorer.aptoslabs.com/account/${coin.address}`,
                 },
-                { text: "🔄", callback_data: `refresh_${coin.id}` },
+                {
+                    text: "🔄",
+                    callback_data: `tradewithcoin_${wallet.id}_${coin.id}`,
+                },
                 { text: "📈 Dexscreener", url: `https://dexscreener.com/aptos/${coin.address}` },
             ],
-            [{ text: "💳 Current wallet", callback_data: "wallet_main" }],
-            [{ text: "-- BUY --", callback_data: "b" }],
             [
-                { text: "Buy 1 APT", callback_data: `buy_${coin.id}_1` },
-                { text: "Buy 5 APT", callback_data: `buy_${coin.id}_5` },
-                { text: "Buy 10 APT", callback_data: `buy_${coin.id}_10` },
+                {
+                    text: `💳 ${textOverflow(wallet.address, 5)}`,
+                    callback_data: `wallet_${wallet.id}`,
+                },
+                {
+                    text: `📍 Positions`,
+                    callback_data: `positions_${wallet.id}`,
+                },
             ],
             [
-                { text: "Buy 20 APT", callback_data: `buy_${coin.id}_20` },
-                { text: "Buy 50 APT", callback_data: `buy_${coin.id}_50` },
+                { text: "Buy 1 APT", callback_data: `buy_${wallet.id}_${coin.id}_1` },
+                { text: "Buy 5 APT", callback_data: `buy_${wallet.id}_${coin.id}_5` },
+                { text: "Buy 10 APT", callback_data: `buy_${wallet.id}_${coin.id}_10` },
             ],
             [
-                { text: "Buy 100 APT", callback_data: `buy_${coin.id}_1000` },
-                { text: "Buy Custom", callback_data: `buy_${coin.id}_custom` },
+                { text: "Buy 20 APT", callback_data: `buy_${wallet.id}_${coin.id}_20` },
+                { text: "Buy 50 APT", callback_data: `buy_${wallet.id}_${coin.id}_50` },
             ],
-            [{ text: "-- SELL --", callback_data: "s" }],
             [
-                { text: "Sell 25%", callback_data: `sell_${coin.id}_25` },
-                { text: "Sell 50%", callback_data: `sell_${coin.id}_50` },
-                { text: "Sell 75%", callback_data: `sell_${coin.id}_75` },
-                { text: "Sell 100%", callback_data: `sell_${coin.id}_100` },
+                { text: "Buy 100 APT", callback_data: `buy_${wallet.id}_${coin.id}_1000` },
+                { text: "Buy Custom", callback_data: `buy_${wallet.id}_${coin.id}_custom` },
+            ],
+            [
+                { text: "Sell 25%", callback_data: `sell_${wallet.id}_${coin.id}_25` },
+                { text: "Sell 50%", callback_data: `sell_${wallet.id}_${coin.id}_50` },
+                { text: "Sell 75%", callback_data: `sell_${wallet.id}_${coin.id}_75` },
+                { text: "Sell 100%", callback_data: `sell_${wallet.id}_${coin.id}_100` },
             ],
             [{ text: "⬅️ Back", callback_data: "back_to_menu" }],
         ],
