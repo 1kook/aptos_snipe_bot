@@ -974,10 +974,13 @@ async function getCoinInfoMessage(
             throw new Error("Failed to fetch coin info");
         }
 
-        const website = Object.entries(info.social)
-            .filter(([_, url]) => url)
-            .map(([platform, url]) => `<a href="${url}">${platform}</a>`)
-            .join(" ");
+        const website =
+            info && info.social
+                ? Object.entries(info.social)
+                      .filter(([_, url]) => url)
+                      .map(([platform, url]) => `<a href="${url}">${platform}</a>`)
+                      .join(" ")
+                : "N/A";
 
         const formattedRate = ethers.formatUnits(rate || 0, cachedCoin.decimals);
 
