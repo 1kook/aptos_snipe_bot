@@ -592,13 +592,7 @@ ${isDefault ? "✅ Default Wallet" : ""}
                             callback_data: `wallet_default_${currentWallet.id}`,
                         },
                     ],
-                    [
-                        {
-                            text: "💸 Withdraw",
-                            callback_data: `wallet_withdraw_${currentWallet.id}`,
-                        },
-                        { text: "🗑️ Delete", callback_data: `wallet_delete_${currentWallet.id}` },
-                    ],
+                    [{ text: "🗑️ Delete", callback_data: `wallet_delete_${currentWallet.id}` }],
                     [
                         {
                             text: "⬅ Back",
