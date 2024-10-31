@@ -266,6 +266,8 @@ bot.action("close", async (ctx) => {
 bot.action(/^(buy|custombuy)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
     const [_, type, walletId, buyCoinId, amount] = params;
+    let chatId, messageId;
+
     try {
         await ctx.answerCbQuery();
         if (amount == "custom") {
@@ -294,7 +296,6 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) =
         const wallet = await getWalletById(Number(walletId), fetchUser.id);
         if (!wallet) throw new Error("Failed to fetch wallet");
 
-        let chatId, messageId;
         if (type == "buy") {
             const pendingMsg = await ctx.reply(
                 `<a href="https://explorer.aptoslabs.com/account/${
@@ -384,31 +385,37 @@ bot.action(/^(buy|custombuy)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) =
         );
     } catch (error: any) {
         console.error("Error in buy action:", error);
-        return ctx.reply(
-            `An error occurred during the buy process: ${error.message}. Please try again.`,
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            {
-                                text: "Retry",
-                                callback_data: `buy_${walletId}_${buyCoinId}_${amount}`,
-                            },
-                            {
-                                text: "Close",
-                                callback_data: "close",
-                            },
-                        ],
+        const text = `An error occurred during the buy process: ${error.message}. Please try again.`;
+        const extraText = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: "Retry",
+                            callback_data: `buy_${walletId}_${buyCoinId}_${amount}`,
+                        },
+                        {
+                            text: "Close",
+                            callback_data: "close",
+                        },
                     ],
-                },
-            }
-        );
+                ],
+            },
+        };
+
+        if (chatId && messageId) {
+            return ctx.telegram.editMessageText(chatId, messageId, undefined, text, extraText);
+        } else {
+            return ctx.reply(text, extraText);
+        }
     }
 });
 
 bot.action(/^(sell|customsell)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx) => {
     const params = ctx.match;
     const [_, type, walletId, sellCoinId, percentageAmount] = params;
+    let chatId, messageId;
+
     try {
         await ctx.answerCbQuery();
 
@@ -425,7 +432,6 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx)
         const wallet = await getWalletById(Number(walletId), fetchUser.id);
         if (!wallet) throw new Error("Failed to fetch wallet");
 
-        let chatId, messageId;
         if (type == "sell") {
             const pendingMsg = await ctx.reply(
                 `<a href="https://explorer.aptoslabs.com/account/${
@@ -513,25 +519,29 @@ bot.action(/^(sell|customsell)_(\d+)_(\d+)_(\d+(?:\.\d+)?|custom)$/, async (ctx)
         );
     } catch (error: any) {
         console.error("Error in sell action:", error);
-        return ctx.reply(
-            `An error occurred during the sell process: ${error.message}. Please try again.`,
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            {
-                                text: "Retry",
-                                callback_data: `sell_${walletId}_${sellCoinId}_${percentageAmount}`,
-                            },
-                            {
-                                text: "Close",
-                                callback_data: "close",
-                            },
-                        ],
+        const text = `An error occurred during the sell process: ${error.message}. Please try again.`;
+        const extraText = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: "Retry",
+                            callback_data: `sell_${walletId}_${sellCoinId}_${percentageAmount}`,
+                        },
+                        {
+                            text: "Close",
+                            callback_data: "close",
+                        },
                     ],
-                },
-            }
-        );
+                ],
+            },
+        };
+
+        if (chatId && messageId) {
+            return ctx.telegram.editMessageText(chatId, messageId, undefined, text, extraText);
+        } else {
+            return ctx.reply(text, extraText);
+        }
     }
 });
 
