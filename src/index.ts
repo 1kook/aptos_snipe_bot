@@ -61,7 +61,7 @@ const bot = new Telegraf<MyContext>(TELEGRAM_BOT_TOKEN);
 bot.use(session());
 
 bot.start(async (ctx) => {
-    const user = await getOrCreateUser(ctx.from.id.toString());
+    const user = await getOrCreateUser(ctx.from.id.toString(), ctx.from.username);
     if (!user) {
         return ctx.reply("Failed to create user.");
     }
